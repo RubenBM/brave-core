@@ -13,7 +13,6 @@
 
 #include "base/guid.h"
 #include "bat/ledger/global_constants.h"
-#include "bat/ledger/internal/common/bind_util.h"
 #include "bat/ledger/internal/common/time_util.h"
 #include "bat/ledger/internal/contribution/contribution.h"
 #include "bat/ledger/internal/contribution/contribution_util.h"
@@ -181,30 +180,25 @@ void Contribution::StartAutoContribute(
 }
 
 void Contribution::OnBalance(
-    const std::string& contribution_queue,
     const ledger::Result result,
-    ledger::BalancePtr info) {
-  auto const queue =
-      braveledger_bind_util::FromStringToContributionQueue(contribution_queue);
-  if (result != ledger::Result::LEDGER_OK || !info) {
+    ledger::BalancePtr info,
+    std::shared_ptr<ledger::ContributionQueuePtr> shared_queue) {
+  if (result != ledger::Result::LEDGER_OK || !shared_queue) {
     queue_in_progress_ = false;
     BLOG(0, "We couldn't get balance from the server.");
     return;
   }
 
-  Process(queue->Clone(), std::move(info));
+  Process(std::move(*shared_queue), std::move(info));
 }
 
-
 void Contribution::Start(ledger::ContributionQueuePtr info) {
-  const auto info_converted =
-      braveledger_bind_util::FromContributionQueueToString(std::move(info));
-  ledger_->wallet()->FetchBalance(
-      std::bind(&Contribution::OnBalance,
-                this,
-                info_converted,
-                _1,
-                _2));
+  auto fetch_callback = std::bind(&Contribution::OnBalance,
+      this,
+      _1,
+      _2,
+      std::make_shared<ledger::ContributionQueuePtr>(std::move(info)));
+  ledger_->wallet()->FetchBalance(fetch_callback);
 }
 
 void Contribution::SetReconcileTimer() {
@@ -376,13 +370,16 @@ void Contribution::CreateNewEntry(
 
   contribution->publishers = std::move(publisher_list);
 
+  auto shared_queue =
+      std::make_shared<ledger::ContributionQueuePtr>(std::move(queue));
+
   auto save_callback = std::bind(&Contribution::OnEntrySaved,
       this,
       _1,
       contribution->contribution_id,
       wallet_type,
       *balance,
-      braveledger_bind_util::FromContributionQueueToString(queue->Clone()));
+      shared_queue);
 
   ledger_->database()->SaveContributionInfo(
       contribution->Clone(),
@@ -394,17 +391,14 @@ void Contribution::OnEntrySaved(
     const std::string& contribution_id,
     const std::string& wallet_type,
     const ledger::Balance& balance,
-    const std::string& queue_string) {
+    std::shared_ptr<ledger::ContributionQueuePtr> shared_queue) {
   if (result != ledger::Result::LEDGER_OK) {
     BLOG(0, "Contribution was not saved correctly");
     return;
   }
 
-  auto queue = braveledger_bind_util::FromStringToContributionQueue(
-      queue_string);
-
-  if (!queue) {
-    BLOG(0, "Queue was not converted successfully");
+  if (!shared_queue) {
+    BLOG(0, "Queue is null");
     return;
   }
 
@@ -437,15 +431,19 @@ void Contribution::OnEntrySaved(
     external_wallet_->Process(contribution_id, result_callback);
   }
 
+  auto queue = std::move(*shared_queue);
+
   if (queue->amount > 0) {
     auto save_callback = std::bind(&Contribution::OnQueueSaved,
       this,
       _1,
       wallet_type,
       balance,
-      braveledger_bind_util::FromContributionQueueToString(queue->Clone()));
+      std::make_shared<ledger::ContributionQueuePtr>(queue->Clone()));
 
-    ledger_->database()->SaveContributionQueue(queue->Clone(), save_callback);
+    ledger_->database()->SaveContributionQueue(
+        queue->Clone(),
+        save_callback);
   } else {
     MarkContributionQueueAsComplete(queue->id);
   }
@@ -455,16 +453,13 @@ void Contribution::OnQueueSaved(
     const ledger::Result result,
     const std::string& wallet_type,
     const ledger::Balance& balance,
-    const std::string& queue_string) {
+    std::shared_ptr<ledger::ContributionQueuePtr> shared_queue) {
   if (result != ledger::Result::LEDGER_OK) {
     BLOG(0, "Queue was not saved successfully");
     return;
   }
 
-  auto queue = braveledger_bind_util::FromStringToContributionQueue(
-      queue_string);
-
-  if (!queue) {
+  if (!shared_queue) {
     BLOG(0, "Queue was not converted successfully");
     return;
   }
@@ -472,7 +467,7 @@ void Contribution::OnQueueSaved(
   CreateNewEntry(
       GetNextProcessor(wallet_type),
       ledger::Balance::New(balance),
-      std::move(queue));
+      std::move(*shared_queue));
 }
 
 void Contribution::Process(
@@ -689,7 +684,7 @@ void Contribution::SetRetryCounter(ledger::ContributionInfoPtr contribution) {
   auto save_callback = std::bind(&Contribution::Retry,
       this,
       _1,
-      braveledger_bind_util::FromContributionToString(contribution->Clone()));
+      std::make_shared<ledger::ContributionInfoPtr>(contribution->Clone()));
 
   ledger_->database()->UpdateContributionInfoStepAndCount(
       contribution->contribution_id,
@@ -710,14 +705,13 @@ void Contribution::OnMarkUnblindedTokensAsSpendable(
 
 void Contribution::Retry(
     const ledger::Result result,
-    const std::string& contribution_string) {
+    std::shared_ptr<ledger::ContributionInfoPtr> shared_contribution) {
   if (result != ledger::Result::LEDGER_OK) {
     BLOG(0, "Retry count update failed");
     return;
   }
 
-  auto contribution = braveledger_bind_util::FromStringToContribution(
-      contribution_string);
+  auto contribution = std::move(*shared_contribution);
 
   if (!contribution) {
     BLOG(0, "Contribution is null");

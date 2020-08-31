@@ -7,7 +7,6 @@
 #include <utility>
 
 #include "base/strings/stringprintf.h"
-#include "bat/ledger/internal/common/bind_util.h"
 #include "bat/ledger/internal/common/time_util.h"
 #include "bat/ledger/internal/database/database_contribution_info.h"
 #include "bat/ledger/internal/database/database_util.h"
@@ -171,7 +170,7 @@ void DatabaseContributionInfo::OnGetRecord(
     std::bind(&DatabaseContributionInfo::OnGetPublishers,
         this,
         _1,
-        braveledger_bind_util::FromContributionToString(info->Clone()),
+        std::make_shared<ledger::ContributionInfoPtr>(info->Clone()),
         callback);
 
   publishers_->GetRecordByContributionList(
@@ -181,12 +180,9 @@ void DatabaseContributionInfo::OnGetRecord(
 
 void DatabaseContributionInfo::OnGetPublishers(
     ledger::ContributionPublisherList list,
-    const std::string& contribution_string,
+    std::shared_ptr<ledger::ContributionInfoPtr> shared_contribution,
     ledger::GetContributionInfoCallback callback) {
-
-  auto contribution = braveledger_bind_util::FromStringToContribution(
-      contribution_string);
-
+  auto contribution = std::move(*shared_contribution);
   if (!contribution) {
     BLOG(1, "Contribution is null");
     callback(nullptr);
@@ -414,7 +410,8 @@ void DatabaseContributionInfo::OnGetContributionReport(
       std::bind(&DatabaseContributionInfo::OnGetContributionReportPublishers,
           this,
           _1,
-          braveledger_bind_util::FromContributionListToString(std::move(list)),
+          std::make_shared<ledger::ContributionInfoList>(
+              std::move(list)),
           callback);
 
   publishers_->GetContributionPublisherPairList(
@@ -424,15 +421,10 @@ void DatabaseContributionInfo::OnGetContributionReport(
 
 void DatabaseContributionInfo::OnGetContributionReportPublishers(
     std::vector<ContributionPublisherInfoPair> publisher_pair_list,
-    const std::string& contribution_list_string,
+    std::shared_ptr<ledger::ContributionInfoList> shared_contributions,
     ledger::GetContributionReportCallback callback) {
-  ledger::ContributionInfoList contribution_list;
-  braveledger_bind_util::FromStringToContributionList(
-      contribution_list_string,
-      &contribution_list);
-
   ledger::ContributionReportInfoList report_list;
-  for (auto& contribution : contribution_list) {
+  for (auto& contribution : *shared_contributions) {
     auto report = ledger::ContributionReportInfo::New();
     report->contribution_id = contribution->contribution_id;
     report->amount = contribution->amount;
@@ -533,7 +525,8 @@ void DatabaseContributionInfo::OnGetList(
       std::bind(&DatabaseContributionInfo::OnGetListPublishers,
           this,
           _1,
-          braveledger_bind_util::FromContributionListToString(std::move(list)),
+          std::make_shared<ledger::ContributionInfoList>(
+              std::move(list)),
           callback);
 
   publishers_->GetRecordByContributionList(
@@ -543,14 +536,9 @@ void DatabaseContributionInfo::OnGetList(
 
 void DatabaseContributionInfo::OnGetListPublishers(
     ledger::ContributionPublisherList list,
-    const std::string& contribution_list_string,
+    std::shared_ptr<ledger::ContributionInfoList> shared_contributions,
     ledger::ContributionInfoListCallback callback) {
-  ledger::ContributionInfoList contribution_list;
-  braveledger_bind_util::FromStringToContributionList(
-      contribution_list_string,
-      &contribution_list);
-
-  for (auto& contribution : contribution_list) {
+  for (auto& contribution : *shared_contributions) {
     for (auto& item : list) {
       if (item->contribution_id != contribution->contribution_id) {
         continue;
@@ -560,7 +548,7 @@ void DatabaseContributionInfo::OnGetListPublishers(
     }
   }
 
-  callback(std::move(contribution_list));
+  callback(std::move(*shared_contributions));
 }
 
 void DatabaseContributionInfo::UpdateStep(
